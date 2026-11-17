@@ -42,6 +42,9 @@ typedef struct {
 
 static dm_glue_present_fn g_present;
 static dm_glue_focus_fn g_focus;
+typedef void (*dm_tv_window_fn)(void *);   // the game framework's front_tv_window (front_ios.m, patches/0062): its TV window, NULL detaches
+static dm_tv_window_fn g_tv_window_fn;     // dlsym'd at Play; NULL: no game's framework loaded, or one built before the hook (the game then never docks)
+static UIWindow *g_tv_window;              // the external display's window (ShellTVSceneDelegate), while its scene is connected
 static UIViewController *g_library_vc;
 static char g_active_exe[1024];
 static char g_active_game_id[64];
@@ -113,6 +116,8 @@ void dm_shell_return_to_library(void) {
         g_active_game_id[0] = '\0';
         g_focus = NULL;
         g_present = NULL;
+        g_tv_window_fn = NULL;   // before the framework's data segments are restored: no calls into it past this point
+        if (g_tv_window) g_tv_window.rootViewController = [UIViewController new];   // the game's view went with the framework's hierarchy: the TV back to black until the next game
         g_boot_ok = 0;
         if (fbase) restore_framework_data(fbase);
         UIWindow *window = nil;
@@ -322,12 +327,14 @@ const char *dm_shell_start_game(const char *const *keys, const char *const *valu
     dm_glue_start_fn start = (dm_glue_start_fn)dlsym(h, "dm_glue_start_game");
     dm_glue_present_fn present = (dm_glue_present_fn)dlsym(h, "dm_glue_present_game");
     dm_glue_focus_fn focus = (dm_glue_focus_fn)dlsym(h, "dm_glue_focus_event");
+    dm_tv_window_fn tv_window = (dm_tv_window_fn)dlsym(h, "front_tv_window");   // optional: a framework built before patches/0062 never docks
     if (!ver || *ver != DM_GLUE_VERSION || !start || !present || !focus) {
         snprintf(err, sizeof err, "This game's framework was built without its host (glue version %d, expected %d). Rebuild the game in the launcher.",
                  ver ? *ver : 0, DM_GLUE_VERSION);
         fprintf(stderr, "[RED] boot: %s: %s\n", executable, err);
         return err;
     }
+    if (!tv_window && g_tv_window) fprintf(stderr, "shell: this game's framework has no front_tv_window, the connected display stays black\n");
     fprintf(stderr, "boot: game framework %s (handle %p, image base %p, glue v%d)\n", executable, h, info.dli_fbase, *ver);
     save_framework_data(info.dli_fbase, game_key, executable, exe_st.st_mtime);
     const char *why = start(argv, argc, info.dli_fbase);
@@ -343,6 +350,7 @@ const char *dm_shell_start_game(const char *const *keys, const char *const *valu
     g_active_fbase = info.dli_fbase;
     g_present = present;
     g_focus = focus;
+    g_tv_window_fn = tv_window;
     g_boot_ok = 1;
     return NULL;
 }
@@ -353,6 +361,10 @@ void dm_shell_present_game(void) {
         if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow || !window) window = w;
     if (!window || !g_present) { fprintf(stderr, "[RED] shell: no window for the game view\n"); return; }
     g_present((__bridge void *)window);
+    if (g_tv_window && g_tv_window_fn) {   // the display connected in the library: the picture moves there as soon as the game view exists
+        g_tv_window_fn((__bridge void *)g_tv_window);
+        fprintf(stderr, "shell: the display is connected, the game's front end gets its window\n");
+    }
 }
 
 const char *dm_shell_active_game_id(void) {
@@ -364,6 +376,29 @@ void dm_shell_request_stop_game(void) {
         g_focus(DM_GLUE_FOCUS_REQUEST_QUIT);
     }
 }
+
+// The TV scene's delegate, in this binary (project-shell.yml names it for the external-display role): a display may connect
+// before any game's framework is dlopen'd, and front_ios.m's DmTVSceneDelegate only exists inside one. The window is made here
+// at once — without a window iOS goes on mirroring the phone; not key, so the phone's window keeps the keyboard — and the game's
+// front end docks the picture into it through front_tv_window (front_ios.m, patches/0062), now or at the next dm_shell_present_game
+@interface ShellTVSceneDelegate : UIResponder <UIWindowSceneDelegate>
+@property (strong, nonatomic) UIWindow *window;
+@end
+@implementation ShellTVSceneDelegate
+- (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)o {
+    (void)session; (void)o;
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
+    self.window.backgroundColor = UIColor.blackColor;
+    self.window.hidden = NO;
+    g_tv_window = self.window;
+    if (g_tv_window_fn) g_tv_window_fn((__bridge void *)self.window);   // a game is running: it docks now (front_ios.m tv_attach)
+}
+- (void)sceneDidDisconnect:(UIScene *)s {
+    if (g_tv_window == self.window) g_tv_window = nil;
+    if (g_tv_window_fn) g_tv_window_fn(NULL);   // front_ios.m tv_detach: the picture back on the phone, the operation mode back
+    self.window = nil;
+}
+@end
 
 @interface App : UIResponder <UIApplicationDelegate>
 @end
@@ -379,12 +414,11 @@ static UIInterfaceOrientationMask shell_orientations(UITraitCollection *traits) 
 - (UISceneConfiguration *)application:(UIApplication *)a configurationForConnectingSceneSession:(UISceneSession *)s options:(UISceneConnectionOptions *)o {
     (void)a; (void)o;
     // A TV by cable or AirPlay: its own session, the manifest's "TV" entry for the role (project-shell.yml). The name must match
-    // that entry, and the delegate is set here, not left to the manifest's lookup: front_ios.m's DmTVSceneDelegate comes with a
-    // game's framework, dlopen'd at Play, so the class does not exist before the first launch (PLAN.md's Phase 1 limit; Phase 2
-    // gives the role a delegate in this binary)
+    // that entry, and the delegate is set here outright: ShellTVSceneDelegate is this binary's own class, so the scene builds
+    // however early the display connects (front_ios.m's DmTVSceneDelegate would not exist before a game's framework is dlopen'd)
     if ([s.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive]) {
         UISceneConfiguration *c = [[UISceneConfiguration alloc] initWithName:@"TV" sessionRole:s.role];
-        c.delegateClass = NSClassFromString(@"DmTVSceneDelegate");
+        c.delegateClass = ShellTVSceneDelegate.class;
         return c;
     }
     return [[UISceneConfiguration alloc] initWithName:@"Default" sessionRole:s.role];
