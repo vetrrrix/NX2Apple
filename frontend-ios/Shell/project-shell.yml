@@ -73,6 +73,13 @@ targets:
             UIWindowSceneSessionRoleApplication:
               - UISceneConfigurationName: Default
                 UISceneDelegateClassName: SceneDelegate
+            # A TV by cable or AirPlay gets a scene of its own instead of mirroring the phone (the engine's own dm/ios/project.yml
+            # declares the same role): the game's picture goes there, the phone keeps the pad (front_ios.m DmTVSceneDelegate,
+            # tv_attach). The class lives in a game's framework, dlopen'd at Play — Phase 1 of PLAN.md: a display connected before
+            # the first launch finds no delegate yet and changes nothing. Phase 2 moves this to a delegate in the app binary.
+            UIWindowSceneSessionRoleExternalDisplayNonInteractive:
+              - UISceneConfigurationName: TV
+                UISceneDelegateClassName: DmTVSceneDelegate
     settings:
       PRODUCT_BUNDLE_IDENTIFIER: ${DM_BUNDLE_ID}
       PRODUCT_NAME: DmShell

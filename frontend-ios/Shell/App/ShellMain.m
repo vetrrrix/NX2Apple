@@ -377,6 +377,16 @@ static UIInterfaceOrientationMask shell_orientations(UITraitCollection *traits) 
     return shell_orientations(window.traitCollection);   // iOS 26
 }
 - (UISceneConfiguration *)application:(UIApplication *)a configurationForConnectingSceneSession:(UISceneSession *)s options:(UISceneConnectionOptions *)o {
+    (void)a; (void)o;
+    // A TV by cable or AirPlay: its own session, the manifest's "TV" entry for the role (project-shell.yml). The name must match
+    // that entry, and the delegate is set here, not left to the manifest's lookup: front_ios.m's DmTVSceneDelegate comes with a
+    // game's framework, dlopen'd at Play, so the class does not exist before the first launch (PLAN.md's Phase 1 limit; Phase 2
+    // gives the role a delegate in this binary)
+    if ([s.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive]) {
+        UISceneConfiguration *c = [[UISceneConfiguration alloc] initWithName:@"TV" sessionRole:s.role];
+        c.delegateClass = NSClassFromString(@"DmTVSceneDelegate");
+        return c;
+    }
     return [[UISceneConfiguration alloc] initWithName:@"Default" sessionRole:s.role];
 }
 - (BOOL)application:(UIApplication *)application openURL:(NSURL *)url options:(NSDictionary<UIApplicationOpenURLOptionsKey,id> *)options {
