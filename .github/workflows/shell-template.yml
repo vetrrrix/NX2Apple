@@ -24,10 +24,12 @@ concurrency:
 
 jobs:
   template:
-    # x64 pool on purpose: the arm64 hosted pool (macos-26) stalled with "not
-    # acquired by Runner ... after multiple attempts" under capacity constraints.
-    # The host arch is irrelevant — xcodebuild cross-compiles the arm64 iOS target.
-    runs-on: macos-26-intel
+    # Xcode 27 on purpose: ShellUI compiles against the iOS 27 SDK (the hinge APIs in
+    # TouchLayoutGeometryProbe.swift — UIHingeInteraction, reservedRegions — do not exist
+    # in the Xcode 26 SDK; the PLAN's Mac requirement is Xcode 27.x for the same reason).
+    # History: macos-26 (arm64) stalled on runner capacity (run #1); macos-26-intel ran
+    # but failed compiling ShellUI for lack of the iOS 27 SDK (run #2).
+    runs-on: xcode-27
     steps:
       - uses: actions/checkout@v4
 
