@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: vetrixik <jackiewiczoskar@gmail.com>
+Date: Tue, 17 Nov 2026 13:41:15 +0100
+Subject: [PATCH] ios: hand the shell's TV window to the game
+
+Upstream-Status: pending
+Reason: The shell's app binary owns the TV scene (its manifest declares the role and its own delegate makes the window, front_ios.m's DmTVSceneDelegate only loads with a game's framework dlopen'd at Play), so a display connected before the first launch kept mirroring; the shell hands its window over and the engine docks the game into it
+Issue: none
+---
+ dm/ios/Sources/front_ios.m | 16 ++++++++++++++++
+ 1 file changed, 16 insertions(+)
+
+diff --git a/dm/ios/Sources/front_ios.m b/dm/ios/Sources/front_ios.m
+index 1495d64..723365d 100644
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -259,6 +259,22 @@ static void tv_detach(void) {
+     if (g_tv_mode_was >= 0) { dm_set_opmode(g_tv_mode_was); g_tv_mode_was = -1; dm_gamepad_opmode_changed(); }
+     LOG("front end: TV disconnected, the picture is back on the phone");
+ }
++// The shell's own TV scene (DmShell's manifest declares the role and its app binary holds the delegate, because DmTVSceneDelegate
++// below is only loaded with a game's framework, dlopen'd at Play): the window it made arrives here, at the scene's willConnect and
++// again when a game is presented into the phone's window. The engine installs its own TV view controller — the aspect fit reads
++// g_picture_aspect — and attaches as with a scene of its own; NULL detaches. The one-game app never calls it
++__attribute__((used, visibility("default")))
++void front_tv_window(void *win) {
++    dispatch_async(dispatch_get_main_queue(), ^{
++        UIWindow *w = (__bridge UIWindow *)win;
++        if (w == g_tv) return;
++        if (g_tv) tv_detach();   // a different window, or none: the picture back on the phone first
++        if (!w) return;
++        w.rootViewController = [DmTVVC new]; w.hidden = NO;   // as DmTVSceneDelegate's willConnect: without a window iOS goes on mirroring the phone
++        g_tv = w; tv_attach();
++    });
++}
++
+ void front_picture_shape(int w, int h) {   // front.h: the views take the presented picture's shape (a taller one under DM_SCREEN_ASPECT) instead of 16:9
+     if (w <= 0 || h <= 0) return;
+     CGFloat a = (CGFloat)w / h;
+-- 
+2.52.0.windows.1
+
