@@ -24,7 +24,10 @@ concurrency:
 
 jobs:
   template:
-    runs-on: macos-26
+    # x64 pool on purpose: the arm64 hosted pool (macos-26) stalled with "not
+    # acquired by Runner ... after multiple attempts" under capacity constraints.
+    # The host arch is irrelevant — xcodebuild cross-compiles the arm64 iOS target.
+    runs-on: macos-26-intel
     steps:
       - uses: actions/checkout@v4
 
