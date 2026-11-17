@@ -1,0 +1,48 @@
+# Build the unsigned `DmShell.app` shell template for the Windows front end.
+#
+# The Windows Qt app never builds the shell itself: `find_shell_template()`
+# (frontend-qt/nspb_qt/win/shell_export.py) looks up a pre-built template and its
+# auto-build is macOS-only. This workflow is that build, no Mac required — it syncs
+# the pinned engine + patch queue, checks the series, builds the template with
+# xcodegen + xcodebuild (CODE_SIGNING_ALLOWED=NO, so no signing setup), and uploads
+# it as the `DmShell.app` artifact. Drop the artifact's contents into
+# `frontend-qt/nspb_qt/win/shell_template/` on the Windows machine, or point
+# `NSPB_SHELL_TEMPLATE` at the extracted bundle.
+#
+# `workflow_dispatch` only works once this file is also on the default branch;
+# until then every push to `tv-mode` triggers a fresh build.
+name: shell-template
+
+on:
+  push:
+    branches: [tv-mode]
+  workflow_dispatch: {}
+
+concurrency:
+  group: shell-template-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  template:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: command -v xcodegen || brew install xcodegen
+
+      - name: Sync the pinned engine and the patch queue
+        run: python3 tools/engine.py sync
+
+      - name: Check the patch queue against the pin
+        run: python3 tools/engine.py check
+
+      - name: Build the DmShell.app template
+        run: python3 tools/build_shell_template.py
+
+      - name: Upload the DmShell.app template
+        uses: actions/upload-artifact@v4
+        with:
+          name: DmShell.app
+          path: frontend-qt/nspb_qt/win/shell_template/DmShell.app
+          if-no-files-found: error
