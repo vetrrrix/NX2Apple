@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: vetrixik <jackiewiczoskar@gmail.com>
+Date: Tue, 17 Nov 2026 18:57:51 +0100
+Subject: [PATCH] tools/romfs: read packed image members on Windows too
+
+Upstream-Status: pending
+Reason: on Windows _resolve never found the .img boundary (abspath returns '\' and the split only knows '/'), so a member open fell through to the real filesystem with [Errno 2] while listing the image worked, and member reads used os.pread, which Windows does not have; normalize the separators before the split, and fall back to seek+read on the reader's own fd
+Issue: none
+---
+ dm/tools/romfs.py | 11 +++++++++--
+ 1 file changed, 9 insertions(+), 2 deletions(-)
+
+diff --git a/dm/tools/romfs.py b/dm/tools/romfs.py
+index 50644ae..8a4e222 100644
+--- a/dm/tools/romfs.py
++++ b/dm/tools/romfs.py
+@@ -145,6 +145,7 @@ def is_image(path):
+ 
+ def _resolve(path):
+     p = _os.path.abspath(_os.fsdecode(path))
++    if _os.path.altsep: p = p.replace(_os.path.sep, '/')   # Windows: abspath returns '\', and the .img split below only knows '/'
+     parts = p.split('/')
+     for i, part in enumerate(parts):
+         if not part.endswith('.img'): continue
+@@ -163,11 +164,17 @@ def source(extraction):
+ 
+ 
+ _fd_ranges = {}
++try:
++    _pread = _os.pread
++except AttributeError:   # Windows has no pread: each reader below owns its fd, so seek+read is the same positional read
++    def _pread(fd, size, offset):
++        _os.lseek(fd, offset, 0)
++        return _os.read(fd, size)
+ 
+ 
+ class _File(io.RawIOBase):
+     def __init__(self, image, k):
+-        self.fd = _os.open(image.path, _os.O_RDONLY)
++        self.fd = _os.open(image.path, _os.O_RDONLY | getattr(_os, 'O_BINARY', 0))   # Windows: without O_BINARY the CRT reads text mode and stops at a 0x1A in the payload
+         a, self.length = image.entry(k)[:2]
+         self.start = image.slice_offset + a
+         self.pos = 0
+@@ -182,7 +189,7 @@ class _File(io.RawIOBase):
+         self.pos = pos; return pos
+     def readinto(self, buffer):
+         size = min(len(buffer), max(0, self.length - self.pos))
+-        data = _os.pread(self.fd, size, self.start + self.pos)
++        data = _pread(self.fd, size, self.start + self.pos)
+         buffer[:len(data)] = data; self.pos += len(data)
+         return len(data)
+     def close(self):
+-- 
+2.52.0.windows.1
+

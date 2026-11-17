@@ -59,3 +59,5 @@
 0061-build-seed-infer-and-self-heal-gl-and-vulkan-gfx.patch
 0062-ios-hand-the-shell-s-tv-window-to-the-game.patch
 0063-ios-a-docked-notice-on-the-phone.patch
+0064-romfs-read-packed-image-members-on-windows-too.patch
+0065-build-seed-skip-the-directory-loop-check-without-identities.patch

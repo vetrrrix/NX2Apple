@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: vetrixik <jackiewiczoskar@gmail.com>
+Date: Tue, 17 Nov 2026 18:57:51 +0100
+Subject: [PATCH] build_seed: skip the directory loop check without directory
+ identities
+
+Upstream-Status: pending
+Reason: Windows stat() leaves st_dev and st_ino at 0, so every directory looked like the same one and every valid seed failed validation with "directory loop inside seed"; without an identity the entry quota still bounds the walk and symlinks stay forbidden
+Issue: none
+---
+ dm/tools/build_seed.py | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
+diff --git a/dm/tools/build_seed.py b/dm/tools/build_seed.py
+index db46ca6..9b9a0c9 100755
+--- a/dm/tools/build_seed.py
++++ b/dm/tools/build_seed.py
+@@ -328,9 +328,10 @@ def _verify_no_symlinks_or_unsafe_names(root_dir):
+                 return False, f'symlink forbidden inside seed: {entry.path}', total_bytes
+             if stat.S_ISDIR(est.st_mode):
+                 key = (est.st_dev, est.st_ino)
+-                if key in visited:
+-                    return False, f'directory loop inside seed: {entry.path}', total_bytes
+-                visited.add(key)
++                if key != (0, 0):   # Windows stat leaves st_dev and st_ino at 0: no identity to loop-check on, the entry quota above still bounds the walk
++                    if key in visited:
++                        return False, f'directory loop inside seed: {entry.path}', total_bytes
++                    visited.add(key)
+                 stack.append(entry.path)
+             elif stat.S_ISREG(est.st_mode):
+                 if est.st_size > SEED_MAX_BYTES - total_bytes:
+-- 
+2.52.0.windows.1
+
