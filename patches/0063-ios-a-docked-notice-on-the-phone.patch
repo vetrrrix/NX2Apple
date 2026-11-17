@@ -1,0 +1,69 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: vetrixik <jackiewiczoskar@gmail.com>
+Date: Tue, 17 Nov 2026 14:08:22 +0100
+Subject: [PATCH] ios: a docked notice on the phone while the picture is on the
+ TV
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Upstream-Status: pending
+Reason: With the picture on the TV the phone shows only the pad (or a black screen once a controller hides it): a centered line names what the screen is for, whatever the input — touch controls or a physical controller
+Issue: none
+---
+ dm/ios/Sources/front_ios.m | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/dm/ios/Sources/front_ios.m b/dm/ios/Sources/front_ios.m
+index 723365dc..cede669e 100644
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -31,6 +31,7 @@ static void front_ios_notify_ask(void);
+ static void front_ios_power_watch(void);
+ static void front_ios_audio_watch(void);
+ static UILabel *front_ios_fps_label(void);
++static UILabel *front_ios_docked_label(void);
+ 
+ @interface DmGameView : UIView
+ @property (nonatomic) CGFloat maxPixelWidth;   // 0: the screen's own pixels; a TV caps the drawable at 1920 across (tv_attach)
+@@ -82,6 +83,7 @@ static void tv_attach(void);
+ @property (nonatomic, strong) DmGameView *game;
+ @property (nonatomic, strong) UIView *pad;
+ @property (nonatomic, strong) UILabel *fps;
++@property (nonatomic, strong) UILabel *docked;
+ @property (nonatomic) BOOL launched;
+ @property (nonatomic, strong) id tv;   // the TV scene accessory's registration (iOS 27)
+ @property (nonatomic) BOOL fill;   // DM_PICTURE_FIT=fill: in landscape the picture covers the screen, its edges cropped (DmLayout.h dm_layout_picture)
+@@ -209,6 +211,12 @@ static void launcher_done(void) { [g_root startGame]; }
+         CGFloat u = layout.separated ? MIN(MIN(s.size.height / 430.0, s.size.width / 700.0), 1.3) : MIN(b.size.height / 430.0, 1.3);
+         self.fps.frame = CGRectMake(floor(CGRectGetMinX(s) + 130 * u), floor(CGRectGetMinY(s) + 22 * u - 11), 64, 22);
+     }
++    if (onTV && !self.docked) {   // the docked notice: the picture is on the TV, this screen is the controller — a dim line mid-screen
++        self.docked = front_ios_docked_label();
++        [self.view addSubview:self.docked];
++    }
++    self.docked.hidden = !onTV;
++    if (onTV) self.docked.center = CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b));
+ }
+ - (void)showFPS:(BOOL)on {   // the frame-rate counter: DM_SHOW_FPS at Play, then the in-game menu
+     if (on && !self.fps) { self.fps = front_ios_fps_label(); [self.view addSubview:self.fps]; [self.view setNeedsLayout]; }   // above the pad, which hides while a controller is connected
+@@ -354,6 +362,16 @@ static UILabel *front_ios_fps_label(void) {
+     return l;
+ }
+ 
++// The docked notice (DmRootVC keeps it centered over the pad while the picture is on the TV): dim, untouchable
++static UILabel *front_ios_docked_label(void) {
++    UILabel *l = [UILabel new];
++    l.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium]; l.textColor = [UIColor colorWithWhite:1 alpha:0.55];
++    l.textAlignment = NSTextAlignmentCenter; l.userInteractionEnabled = NO;
++    l.text = @"Viewing on external display";
++    [l sizeToFit];
++    return l;
++}
++
+ // Progress screen of the prepare step (front.h front_progress): a dark view over the game's view and the pad, the title, a bar and a count, centered; UIKit views, so it draws while the game's thread waits
+ static UIView *g_prog; static UILabel *g_prog_count; static UIProgressView *g_prog_bar; static UILabel *g_prog_title;
+ void (*front_progress_hook)(const char *title, long done, long total);
+-- 
+2.52.0.windows.1
+
