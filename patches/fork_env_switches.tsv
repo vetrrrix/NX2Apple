@@ -41,4 +41,5 @@ DM_TOUCH_HINT	player	Localized words for the iOS right-stick hint, shown once pe
 DM_TOUCH_LAYOUT	player	The player's per-layout touch-control arrangement, encoded by the shell's touch layout editor. Invalid values keep the built-in positions
 DM_TOUCH_SIZE	player	iOS touch-control size: small, medium (default) or large. Controls move toward medium when the requested size does not fit
 DM_TOUCH_STICK	player	iOS left touch-stick position: corner (default), higher or inward
+DM_TV_DISPLAY	player	The external display's mode in the iOS shared shell: `off` keeps the picture on the phone (a connected display stays black), `720p` sends it there while the game stays handheld, `1080p` (default) docks it as a Switch in its dock; the shell's Settings row and the in-game menu pick it, and `front_tv_opmode` with `dm_setting_live` apply it at once (or at the next hand-off)
 DM_UI_HOLD	test	When set, keeps the controller mapping test window open for 60 seconds after its UI screenshot for manual inspection

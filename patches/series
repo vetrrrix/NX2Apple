@@ -61,3 +61,4 @@
 0063-ios-a-docked-notice-on-the-phone.patch
 0064-romfs-read-packed-image-members-on-windows-too.patch
 0065-build-seed-skip-the-directory-loop-check-without-identities.patch
+0066-front-ios-the-mode-the-external-display-presents.patch

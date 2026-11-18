@@ -1,0 +1,213 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: vetrixik <jackiewiczoskar@gmail.com>
+Date: Wed, 18 Nov 2026 10:55:11 +0100
+Subject: [PATCH] front_ios: the mode the external display presents at, from
+ the shell
+
+Docking switched the game to docked opmode unconditionally, so a picture on an
+external display was always 1080p with no way to choose otherwise (heat and
+throttling on the phone, and no way to keep the picture on the phone with a
+display plugged in). The shell's new external-display setting now names it:
+
+- front_tv_opmode(int): 1 docks at 1080p as a Switch in its dock, 0 keeps the
+  game handheld at the 720p class while the picture still goes to the display.
+  tv_attach reads it instead of a hard-coded 1, tv_opmode_set applies a change
+  to a display already showing the game, and detach still restores the mode
+  saved at attach. The default is 1, so a shell that never calls it (an older
+  one) docks as it always did, and the shell calls it before front_tv_window at
+  every hand-off.
+- dm_setting_live takes DM_TV_DISPLAY, the setting's value in the in-game menu:
+  it detaches at off or applies the mode, and pokes dm_shell_tv_display_changed
+  (dlsym'd, like dm_shell_return_to_library) so the shell keeps the value and
+  re-runs its own hand-off. The probe with no value returns true, so an older
+  shell can ask whether the game takes it at once.
+- The in-game menu offers the setting (its own row in the shell's payload, with
+  global so no game's suite keeps a copy), the docked notice names 720p or
+  1080p, and the DM_OPMODE row locked to a TV reads the live mode instead of
+  assuming docked.
+
+Upstream-Status: pending
+Reason: the shell's external-display setting names the mode the display presents at, which only the engine can apply
+Issue: none
+
+---
+ dm/ios/Sources/DmGameMenu.h              |  1 +
+ dm/ios/Sources/GameMenu.swift            | 10 +++--
+ dm/ios/Sources/front_ios.m               | 48 ++++++++++++++++++++++--
+ dm/ios/tests/duo/Tests/DuoHarnessTests.m |  6 ++-
+ 4 files changed, 57 insertions(+), 8 deletions(-)
+
+diff --git a/dm/ios/Sources/DmGameMenu.h b/dm/ios/Sources/DmGameMenu.h
+index f7b236c..f50aba3 100644
+--- a/dm/ios/Sources/DmGameMenu.h
++++ b/dm/ios/Sources/DmGameMenu.h
+@@ -13,6 +13,7 @@ void dm_pad_layout_set(int layout);   // releases every touch first, and is save
+ void dm_gamepad_touch_feedback(bool on);   // DM_TOUCH_HAPTICS
+ bool dm_setting_live(const char *env, const char *value);
+ bool dm_tv_connected(void);   // front_ios.m: true while an external display presents the game window
++int dm_opmode(void);   // hle.h: the operation mode the game runs at (0 handheld, 1 docked), so the menu names the live one
+ void *dm_quit_menu(void);   // front_ios.m: the menu's last item, Quit <game>, which opens the quit prompt (a retained UIMenu, shown inline)   // front_ios.m: value NULL asks whether the running game takes env at once; otherwise applies it
+ #ifdef __cplusplus
+ }
+diff --git a/dm/ios/Sources/GameMenu.swift b/dm/ios/Sources/GameMenu.swift
+index ff785bb..3e77b88 100644
+--- a/dm/ios/Sources/GameMenu.swift
++++ b/dm/ios/Sources/GameMenu.swift
+@@ -25,7 +25,7 @@ enum GameMenuText: Int, CaseIterable {
+     var text: String { Self.line(self, in: getenv("DM_GAME_MENU_TEXT").map { String(cString: $0) }) }
+ }
+ 
+-private let shellMenuAllowlist: Set<String> = ["DM_OPMODE", "DM_PICTURE_FIT", "DM_SHOW_FPS", "DM_AUDIO_MIX", "DM_METAL_HUD"]
++private let shellMenuAllowlist: Set<String> = ["DM_OPMODE", "DM_PICTURE_FIT", "DM_SHOW_FPS", "DM_AUDIO_MIX", "DM_METAL_HUD", "DM_TV_DISPLAY"]
+ 
+ private struct ShellMenuPayload: Decodable {
+     let suiteName: String
+@@ -36,6 +36,7 @@ private struct ShellMenuItem: Decodable {
+     let env, kind, label, effectiveDefault: String
+     let onValue, offValue: String?
+     let options: [[String]]?
++    let global: Bool?   // true: the shell keeps the value, not this game's suite (DM_TV_DISPLAY, the external-display setting)
+ 
+     var resolvedOnValue: String { onValue ?? "1" }
+     var resolvedOffValue: String { offValue ?? "0" }
+@@ -110,13 +111,16 @@ private func shellMenuRow(_ shell: ShellMenuPayload, _ item: ShellMenuItem, fixe
+     let envValue = getenv(item.env).map { String(cString: $0) }
+     let initialNow = envValue.flatMap { item.accepts($0) ? $0 : nil } ?? item.effectiveDefault
+     let tvLocked = item.env == "DM_OPMODE" && dm_tv_connected()
+-    let now = tvLocked ? "1" : initialNow
++    // Locked while a TV shows the picture (its pick only sets the mode an unplug returns to), and it names the mode the
++    // game runs at now: the external-display setting may keep it handheld at 720p while docked
++    let now = tvLocked ? (dm_opmode() != 0 ? "1" : "0") : initialNow
+     let isFixed = fixed.contains(item.env)
+     let attributes: UIMenuElement.Attributes = (isFixed || tvLocked) ? .disabled : []
+     func pick(_ v: String) {
+         setenv(item.env, v, 1)
+         _ = dm_setting_live(item.env, v)
+-        if !shell.suiteName.isEmpty, let defaults = UserDefaults(suiteName: shell.suiteName) {
++        // A global item's value belongs to the shell, which stores it when dm_setting_live pokes it (dm_shell_tv_display_changed)
++        if item.global != true, !shell.suiteName.isEmpty, let defaults = UserDefaults(suiteName: shell.suiteName) {
+             let key = "launcher." + item.env
+             if v == item.effectiveDefault { defaults.removeObject(forKey: key) } else { defaults.set(v, forKey: key) }
+         }
+diff --git a/dm/ios/Sources/front_ios.m b/dm/ios/Sources/front_ios.m
+index dd8cf65..235c06b 100644
+--- a/dm/ios/Sources/front_ios.m
++++ b/dm/ios/Sources/front_ios.m
+@@ -44,6 +44,7 @@ static void front_ios_power_watch(void);
+ static void front_ios_audio_watch(void);
+ static UILabel *front_ios_fps_label(void);
+ static UILabel *front_ios_docked_label(void);
++static NSString *front_ios_docked_text(void);
+ 
+ @interface DmGameView : UIView
+ @property (nonatomic) CGFloat maxPixelWidth;   // 0: the screen's own pixels; a TV caps the drawable at 1920 across (tv_attach)
+@@ -282,6 +283,8 @@ UIViewController *front_ios_root(void) { return [DmRootVC new]; }
+ - (void)viewDidLayoutSubviews { [super viewDidLayoutSubviews]; for (UIView *v in self.view.subviews) v.frame = dm_aspect_fit(self.view.bounds, g_picture_aspect); }
+ @end
+ static UIWindow *g_tv; static int g_tv_mode_was = -1;
++static int g_tv_opmode = 1;   // the mode the shell's external-display setting asks for (front_tv_opmode): 1 docked at 1080p, 0 handheld at 720p while
++                              // the picture still goes to the TV; the default is docked, so a shell that never calls it behaves as it always did
+ static void tv_attach(void) {
+     DmGameView *v = g_root.game; if (!g_tv || !v || v.superview == g_tv.rootViewController.view) return;
+     // at most 1080p: the game renders 1080p docked, and a 4K drawable only adds an upscale and a 4K stream (an AirPlay TV showed black, the GPU went from 15 to 60 ms a frame).
+@@ -290,8 +293,9 @@ static void tv_attach(void) {
+     [g_tv.rootViewController.view addSubview:v]; [g_tv.rootViewController.view setNeedsLayout]; [g_root.view setNeedsLayout];   // the phone's pad takes the whole screen
+     CGRect f = dm_aspect_fit(g_tv.bounds, g_picture_aspect); CGFloat scale = MIN(g_tv.windowScene.screen.nativeScale, 1920.0 / MAX(f.size.width, 1));
+     if (g_tv_mode_was < 0) g_tv_mode_was = dm_opmode();
+-    dm_set_opmode(1); dm_gamepad_opmode_changed();
+-    LOG("front end: TV connected (%.0fx%.0f points), the picture moves there at %.0fx%.0f, console mode", g_tv.bounds.size.width, g_tv.bounds.size.height, f.size.width * scale, f.size.height * scale);
++    dm_set_opmode(g_tv_opmode); dm_gamepad_opmode_changed();
++    LOG("front end: TV connected (%.0fx%.0f points), the picture moves there at %.0fx%.0f, %s", g_tv.bounds.size.width, g_tv.bounds.size.height, f.size.width * scale, f.size.height * scale, g_tv_opmode ? "console mode" : "handheld mode (720p light)");
++    g_root.docked.text = front_ios_docked_text();   // the notice names the mode the picture runs at (nil until the label exists, which then reads it)
+ }
+ static void tv_detach(void) {
+     DmGameView *v = g_root.game; g_tv = nil; v.maxPixelWidth = 0;
+@@ -299,6 +303,17 @@ static void tv_detach(void) {
+     if (g_tv_mode_was >= 0) { dm_set_opmode(g_tv_mode_was); g_tv_mode_was = -1; dm_gamepad_opmode_changed(); }
+     LOG("front end: TV disconnected, the picture is back on the phone");
+ }
++// The mode while the picture is on the TV, from either side: the shell's hand-off (front_tv_opmode, before it hands the
++// window) and the in-game menu's DM_TV_DISPLAY (dm_setting_live). Detach restores the mode saved at attach, so this only
++// changes how the picture renders on the TV, never what an unplug returns to
++static void tv_opmode_set(int mode) {
++    mode = mode ? 1 : 0;
++    if (mode == g_tv_opmode) return;
++    g_tv_opmode = mode;
++    LOG("front end: external display at %s%s", mode ? "1080p (docked)" : "720p (handheld)", g_tv ? ", applied to the running game" : "");
++    if (g_tv) { dm_set_opmode(mode); dm_gamepad_opmode_changed(); }
++    g_root.docked.text = front_ios_docked_text();
++}
+ // The shell's own TV scene (DmShell's manifest declares the role and its app binary holds the delegate, because DmTVSceneDelegate
+ // below is only loaded with a game's framework, dlopen'd at Play): the window it made arrives here, at the scene's willConnect and
+ // again when a game is presented into the phone's window. The engine installs its own TV view controller — the aspect fit reads
+@@ -314,6 +329,14 @@ void front_tv_window(void *win) {
+         g_tv = w; tv_attach();
+     });
+ }
++// The mode the shell's external-display setting names (its Settings row, and the in-game menu's DM_TV_DISPLAY through
++// dm_setting_live): 1 docks the game at 1080p as a Switch in its dock, 0 keeps it handheld while the picture still goes to
++// the TV. The shell calls it before front_tv_window at every hand-off; while the picture is already on the TV the change
++// applies at once. A shell that never calls it leaves the default, docked, so an old shell behaves as before
++__attribute__((used, visibility("default")))
++void front_tv_opmode(int mode) {
++    dispatch_async(dispatch_get_main_queue(), ^{ tv_opmode_set(mode); });
++}
+ 
+ void front_picture_shape(int w, int h) {   // front.h: the views take the presented picture's shape (a taller one under DM_SCREEN_ASPECT) instead of 16:9
+     if (w <= 0 || h <= 0) return;
+@@ -347,6 +370,18 @@ bool dm_setting_live(const char *env, const char *value) {
+         dm_set_opmode(m); dm_gamepad_opmode_changed(); LOG("front end: console mode %s (in-game menu)", m ? "docked" : "handheld");
+         return true;
+     }
++    // The shell's external-display setting, picked in the in-game menu: the picture comes back to the phone, or the mode
++    // changes on the TV. The shell keeps the value (dm_shell_tv_display_changed) and re-runs its hand-off, which gives the
++    // window when the picture must move and keeps the display black at Phone only; the poke is optional, an engine without
++    // the shell beside it (the one-game app) has no such setting to pick
++    if (!strcmp(env, "DM_TV_DISPLAY")) {
++        if (!value) return true;
++        if (!strcmp(value, "off")) { if (g_tv) tv_detach(); }
++        else tv_opmode_set(strstr(value, "720") ? 0 : 1);
++        void (*display_changed)(const char *) = (void (*)(const char *))dlsym(RTLD_DEFAULT, "dm_shell_tv_display_changed");
++        if (display_changed) display_changed(value);
++        return true;
++    }
+     if (!strcmp(env, "DM_SHOW_FPS")) { if (value) [g_root showFPS:atoi(value) != 0]; return true; }
+     if (!strcmp(env, "DM_TOUCH_HAPTICS")) { if (value) dm_gamepad_touch_feedback(atoi(value) != 0); return true; }
+     if (!strcmp(env, "DM_RUMBLE")) { if (value) { dm_haptics_set_enabled(atoi(value) != 0); LOG("front end: game rumble %s (in-game menu)", atoi(value) ? "on" : "off"); } return true; }
+@@ -418,12 +453,17 @@ static UILabel *front_ios_fps_label(void) {
+     return l;
+ }
+ 
+-// The docked notice (DmRootVC keeps it centered over the pad while the picture is on the TV): dim, untouchable
++// The docked notice (DmRootVC keeps it centered over the pad while the picture is on the TV): dim, untouchable, and it
++// names the mode the picture runs at — the shell's setting picked 720p light (handheld) or 1080p (docked), and
++// tv_opmode_set refreshes the text when the mode changes under it
++static NSString *front_ios_docked_text(void) {
++    return [NSString stringWithFormat:@"Viewing on external display · %@", g_tv_opmode ? @"1080p" : @"720p"];
++}
+ static UILabel *front_ios_docked_label(void) {
+     UILabel *l = [UILabel new];
+     l.font = [UIFont systemFontOfSize:15 weight:UIFontWeightMedium]; l.textColor = [UIColor colorWithWhite:1 alpha:0.55];
+     l.textAlignment = NSTextAlignmentCenter; l.userInteractionEnabled = NO;
+-    l.text = @"Viewing on external display";
++    l.text = front_ios_docked_text();
+     [l sizeToFit];
+     return l;
+ }
+diff --git a/dm/ios/tests/duo/Tests/DuoHarnessTests.m b/dm/ios/tests/duo/Tests/DuoHarnessTests.m
+index 0c965c7..e1e739e 100644
+--- a/dm/ios/tests/duo/Tests/DuoHarnessTests.m
++++ b/dm/ios/tests/duo/Tests/DuoHarnessTests.m
+@@ -735,7 +735,11 @@ static BOOL gDuoHarnessReduceMotionEnabled;
+     [root.view layoutIfNeeded];
+     UIView *game = [root valueForKey:@"game"];
+     XCTAssertTrue(dm_setting_live("DM_PICTURE_FIT", NULL) && dm_setting_live("DM_OPMODE", NULL) && dm_setting_live("DM_RUMBLE", NULL)
+-                  && dm_setting_live("DM_SHOW_FPS", NULL) && dm_setting_live("DM_TOUCH_HAPTICS", NULL) && dm_setting_live("DM_AUDIO_MIX", NULL));
++                  && dm_setting_live("DM_SHOW_FPS", NULL) && dm_setting_live("DM_TOUCH_HAPTICS", NULL) && dm_setting_live("DM_AUDIO_MIX", NULL)
++                  && dm_setting_live("DM_TV_DISPLAY", NULL), @"the shell's external-display setting probes as one the game takes at once");
++    XCTAssertTrue(dm_setting_live("DM_TV_DISPLAY", "720p"), @"a mode applies without a display connected (it names the next one)");
++    XCTAssertTrue(dm_setting_live("DM_TV_DISPLAY", "off"));
++    XCTAssertTrue(dm_setting_live("DM_TV_DISPLAY", "1080p"), @"back to the default for whatever runs next");
+     XCTAssertFalse(dm_setting_live("DM_LANG", NULL), @"A setting the game reads once at start is not offered");
+     XCTAssertFalse(dm_setting_live("DM_FPS_TARGET", NULL));
+ 
