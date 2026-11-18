@@ -44,6 +44,8 @@ static dm_glue_present_fn g_present;
 static dm_glue_focus_fn g_focus;
 typedef void (*dm_tv_window_fn)(void *);   // the game framework's front_tv_window (front_ios.m, patches/0062): its TV window, NULL detaches
 static dm_tv_window_fn g_tv_window_fn;     // dlsym'd at Play; NULL: no game's framework loaded, or one built before the hook (the game then never docks)
+typedef void (*dm_tv_opmode_fn)(int);      // its front_tv_opmode (front_ios.m, patches/0066): the mode the display's setting names, 0 handheld 720p, 1 docked 1080p
+static dm_tv_opmode_fn g_tv_opmode_fn;     // dlsym'd at Play with it; NULL: a framework built before the hook docks at 1080p whatever the setting says
 static UIWindow *g_tv_window;              // the external display's window (ShellTVSceneDelegate), while its scene is connected
 static UIViewController *g_library_vc;
 static char g_active_exe[1024];
@@ -117,6 +119,7 @@ void dm_shell_return_to_library(void) {
         g_focus = NULL;
         g_present = NULL;
         g_tv_window_fn = NULL;   // before the framework's data segments are restored: no calls into it past this point
+        g_tv_opmode_fn = NULL;
         if (g_tv_window) g_tv_window.rootViewController = [UIViewController new];   // the game's view went with the framework's hierarchy: the TV back to black until the next game
         g_boot_ok = 0;
         if (fbase) restore_framework_data(fbase);
@@ -328,6 +331,7 @@ const char *dm_shell_start_game(const char *const *keys, const char *const *valu
     dm_glue_present_fn present = (dm_glue_present_fn)dlsym(h, "dm_glue_present_game");
     dm_glue_focus_fn focus = (dm_glue_focus_fn)dlsym(h, "dm_glue_focus_event");
     dm_tv_window_fn tv_window = (dm_tv_window_fn)dlsym(h, "front_tv_window");   // optional: a framework built before patches/0062 never docks
+    dm_tv_opmode_fn tv_opmode = (dm_tv_opmode_fn)dlsym(h, "front_tv_opmode");   // optional: a framework built before patches/0066 docks at 1080p whatever the setting says
     if (!ver || *ver != DM_GLUE_VERSION || !start || !present || !focus) {
         snprintf(err, sizeof err, "This game's framework was built without its host (glue version %d, expected %d). Rebuild the game in the launcher.",
                  ver ? *ver : 0, DM_GLUE_VERSION);
@@ -335,6 +339,7 @@ const char *dm_shell_start_game(const char *const *keys, const char *const *valu
         return err;
     }
     if (!tv_window && g_tv_window) fprintf(stderr, "shell: this game's framework has no front_tv_window, the connected display stays black\n");
+    if (!tv_opmode && ShellTVDisplay.mode == 1) fprintf(stderr, "shell: this game's framework has no front_tv_opmode, the display docks at 1080p despite the 720p setting\n");
     fprintf(stderr, "boot: game framework %s (handle %p, image base %p, glue v%d)\n", executable, h, info.dli_fbase, *ver);
     save_framework_data(info.dli_fbase, game_key, executable, exe_st.st_mtime);
     const char *why = start(argv, argc, info.dli_fbase);
@@ -351,8 +356,26 @@ const char *dm_shell_start_game(const char *const *keys, const char *const *valu
     g_present = present;
     g_focus = focus;
     g_tv_window_fn = tv_window;
+    g_tv_opmode_fn = tv_opmode;
     g_boot_ok = 1;
     return NULL;
+}
+
+// The external-display setting (ShellSettingsStore's tvDisplay, read through ShellTVDisplay): at each hand-off point — the
+// scene's willConnect, dm_shell_present_game below, and the store's change notification — the window goes to the connected
+// display only at the setting's mode. Phone only never hands it over: the display stays black, no mirroring, whatever the
+// framework knows how to do
+static void shell_tv_handoff(void) {
+    if (!g_tv_window || !g_tv_window_fn) return;   // no display connected, or no game framework loaded: nothing to hand
+    int mode = (int)ShellTVDisplay.mode;           // 0 phone only, 1 TV 720p (the game stays handheld), 2 TV 1080p (docked)
+    if (mode == 0) {
+        g_tv_window_fn(NULL);                      // front_ios.m tv_detach: the picture back on the phone (idempotent)
+        fprintf(stderr, "shell: external display set to Phone only, the display stays black\n");
+        return;
+    }
+    if (g_tv_opmode_fn) g_tv_opmode_fn(mode == 1 ? 0 : 1);   // before the window: tv_attach reads it (front_ios.m, patches/0066)
+    g_tv_window_fn((__bridge void *)g_tv_window);
+    fprintf(stderr, "shell: the display is connected, the game's front end gets its window at %s\n", mode == 1 ? "720p" : "1080p");
 }
 
 void dm_shell_present_game(void) {
@@ -361,10 +384,18 @@ void dm_shell_present_game(void) {
         if ([s isKindOfClass:UIWindowScene.class]) for (UIWindow *w in ((UIWindowScene *)s).windows) if (w.isKeyWindow || !window) window = w;
     if (!window || !g_present) { fprintf(stderr, "[RED] shell: no window for the game view\n"); return; }
     g_present((__bridge void *)window);
-    if (g_tv_window && g_tv_window_fn) {   // the display connected in the library: the picture moves there as soon as the game view exists
-        g_tv_window_fn((__bridge void *)g_tv_window);
-        fprintf(stderr, "shell: the display is connected, the game's front end gets its window\n");
-    }
+    shell_tv_handoff();   // the display connected in the library: the picture moves there as soon as the game view exists, at the setting's mode
+}
+
+// The in-game menu's pick of DM_TV_DISPLAY (front_ios.m dm_setting_live): the shell's setting follows and the change
+// notification re-runs the hand-off. Exported for dlsym(RTLD_DEFAULT), like dm_shell_return_to_library
+__attribute__((used, visibility("default")))
+void dm_shell_tv_display_changed(const char *value) {
+    if (!value) return;
+    NSString *picked = [NSString stringWithUTF8String:value];   // copy here: the caller's buffer is a Swift temporary that dies with its call
+    dispatch_async(dispatch_get_main_queue(), ^{
+        [ShellTVDisplay applyEngineValue:picked];   // stores it; ShellSettingsStore's notification runs the hand-off above
+    });
 }
 
 const char *dm_shell_active_game_id(void) {
@@ -391,7 +422,7 @@ void dm_shell_request_stop_game(void) {
     self.window.backgroundColor = UIColor.blackColor;
     self.window.hidden = NO;
     g_tv_window = self.window;
-    if (g_tv_window_fn) g_tv_window_fn((__bridge void *)self.window);   // a game is running: it docks now (front_ios.m tv_attach)
+    shell_tv_handoff();   // a game is running: it docks now, at the setting's mode (front_ios.m tv_attach); Phone only keeps the display black
 }
 - (void)sceneDidDisconnect:(UIScene *)s {
     if (g_tv_window == self.window) g_tv_window = nil;
@@ -413,9 +444,7 @@ static UIInterfaceOrientationMask shell_orientations(UITraitCollection *traits) 
 }
 - (UISceneConfiguration *)application:(UIApplication *)a configurationForConnectingSceneSession:(UISceneSession *)s options:(UISceneConnectionOptions *)o {
     (void)a; (void)o;
-    // A TV by cable or AirPlay: its own session, the manifest's "TV" entry for the role (project-shell.yml). The name must match
-    // that entry, and the delegate is set here outright: ShellTVSceneDelegate is this binary's own class, so the scene builds
-    // however early the display connects (front_ios.m's DmTVSceneDelegate would not exist before a game's framework is dlopen'd)
+    // A TV's own session: the manifest's "TV" entry for the role (project-shell.yml), whose name and delegate must match it
     if ([s.role isEqualToString:UIWindowSceneSessionRoleExternalDisplayNonInteractive]) {
         UISceneConfiguration *c = [[UISceneConfiguration alloc] initWithName:@"TV" sessionRole:s.role];
         c.delegateClass = ShellTVSceneDelegate.class;
@@ -500,6 +529,10 @@ int main(int argc, char **argv) {
         for (NSString *fw in [NSFileManager.defaultManager contentsOfDirectoryAtPath:hotPath error:nil])
             if ([fw hasSuffix:@".framework"]) fprintf(stderr, "shell: hot-framework %s\n", fw.UTF8String);
         metal_hud_per_layer();
+        // the setting's changes (the settings row, or the in-game menu's pick) re-run the hand-off, so a flip while a
+        // game runs applies at once
+        [NSNotificationCenter.defaultCenter addObserverForName:ShellTVDisplay.changeNotificationName object:nil queue:NSOperationQueue.mainQueue
+                                                  usingBlock:^(NSNotification *note) { (void)note; shell_tv_handoff(); }];
     }
     @autoreleasepool { return UIApplicationMain(argc, argv, nil, NSStringFromClass(App.class)); }
 }

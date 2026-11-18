@@ -9,6 +9,7 @@ enum ShellSettingsRows {
     static let audioMix = "shell.audioMix"
     static let touchSize = "shell.touchSize"
     static let touchStick = "shell.touchStick"
+    static let tvDisplay = "shell.tvDisplay"
     static let targetPrefix = "shs.row."
 
     static func hudRow(_ store: ShellSettingsStore) -> SettingRow {
@@ -43,6 +44,20 @@ enum ShellSettingsRows {
                    value: store.touchStick)
     }
 
+    /// The three states of the external display, in the row's order (PLAN section 3): the picture stays on the phone,
+    /// or moves to a connected display at the light 720p or the docked 1080p. The docked 1080p is the default.
+    static var tvDisplayOptions: [SettingOption] {
+        ShellSettingsStore.tvDisplays.map { SettingOption($0, ShellSettingsStore.tvDisplayLabel($0)) }
+    }
+
+    /// Where a connected display gets the game's picture. The row opens the list; the pick is what moves the picture
+    /// (ShellSettingsStore posts the change and ShellMain.m's hand-off runs).
+    static func tvDisplayRow(_ store: ShellSettingsStore) -> SettingRow {
+        SettingRow(id: tvDisplay, label: ShellStrings.text("External display"),
+                   note: ShellStrings.text("A connected display gets the game's picture. The phone stays the controller."),
+                   kind: .choice(tvDisplayOptions), value: store.tvDisplay)
+    }
+
     /// Under the preview and in the editor options: these are shell-wide defaults that game settings or configuration files can override.
     static var touchNote: String { ShellStrings.text("Games and configuration files can override these defaults.") }
 
@@ -54,6 +69,7 @@ enum ShellSettingsRows {
         case audioMix: store.storeAudioMix(value == "1")
         case touchSize: store.storeTouchSize(value)
         case touchStick: store.storeTouchStick(value)
+        case tvDisplay: store.storeTVDisplay(value)
         default: break
         }
     }
@@ -62,6 +78,7 @@ enum ShellSettingsRows {
 /// Native grouped settings for shell-wide defaults; per-game choices retain precedence.
 struct ShellSettingsView: View {
     @Environment(\.shellNativeBars) private var nativeBars
+    @Environment(\.shellPickChoice) private var pickChoice
     var store: ShellSettingsStore = .current
     var actions: ShellActions
     var onClose: () -> Void
@@ -69,6 +86,11 @@ struct ShellSettingsView: View {
     @Environment(\.shellFocus) private var focus
     /// Counts the changes in the defaults, so the rows read the store again.
     @State private var revision = 0
+
+    /// The external-display row opens its list of three choices (the library draws it and applies the pick).
+    private func pickTVDisplay() {
+        pickChoice?(ChoiceRequest(gameID: ShellSettingsRows.gameID, row: ShellSettingsRows.tvDisplayRow(store)))
+    }
 
     var body: some View {
         let _ = revision
@@ -176,6 +198,18 @@ struct ShellSettingsView: View {
                     Text(ShellStrings.text("Interface"))
                 } footer: {
                     Text(ShellStrings.text("Used by games that have no choice of their own."))
+                }
+
+                Section {
+                    ChoiceValueRow(row: ShellSettingsRows.tvDisplayRow(store),
+                                  valueLabel: ShellSettingsRows.tvDisplayOptions.first { $0.id == store.tvDisplay }?.label ?? "",
+                                  open: pickTVDisplay)
+                        .accessibilityIdentifier("setting.\(ShellSettingsRows.tvDisplay)")
+                        .shellTarget("shs.row.\(ShellSettingsRows.tvDisplay)") { pickTVDisplay() }
+                } header: {
+                    Text(ShellStrings.text("Display"))
+                } footer: {
+                    Text(ShellStrings.text("The picture moves as soon as a value is picked."))
                 }
             }
             .formStyle(.grouped)

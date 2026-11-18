@@ -22,6 +22,25 @@ public final class ShellSettingsStore: @unchecked Sendable {
     public static let touchStickPlaces = ["corner", "higher", "inward"]
     public static let touchModeKey = "touchMode" // 2d/3d, separate from saved positions
     public static let touchLayoutKey = "touchLayout"             // the player's arrangement: DM_TOUCH_LAYOUT for every game
+    public static let tvDisplayKey = "tvDisplay"                 // off, 720p or 1080p: where the game's picture shows
+    /// The external-display setting's values, in the row's order. The docked 1080p is the built-in mode and is never stored.
+    public static let tvDisplays = ["off", "720p", "1080p"]
+    /// One value's label (PLAN section 3: Phone only, or a TV at the light 720p or the docked 1080p), in the player's
+    /// language. The settings row and the in-game menu's payload both read this, so the two never name it differently.
+    public static func tvDisplayLabel(_ value: String, bundle: Bundle = ShellStrings.bundle) -> String {
+        switch value {
+        case "off": return ShellStrings.word("Phone only", bundle: bundle)
+        case "720p": return ShellStrings.word("TV · 720p (light)", bundle: bundle)
+        default: return ShellStrings.word("TV · 1080p (docked)", bundle: bundle)
+        }
+    }
+    /// The setting's own name, in the player's language (both the settings row and the in-game menu's item).
+    public static func tvDisplayTitle(bundle: Bundle = ShellStrings.bundle) -> String {
+        ShellStrings.word("External display", bundle: bundle)
+    }
+    /// Posted after every tvDisplay write (the settings row, and the in-game menu's DM_TV_DISPLAY pick through
+    /// dm_shell_tv_display_changed). ShellMain.m observes it and re-runs its hand-off, so a change applies at once.
+    public static let tvDisplayDidChange = Notification.Name("DMShellTVDisplayDidChange")
 
     /// The store the app reads and writes. Tests and previews swap it.
     nonisolated(unsafe) public static var current = ShellSettingsStore()
@@ -51,6 +70,18 @@ public final class ShellSettingsStore: @unchecked Sendable {
     public func clearCloudSavesFolderName() { defaults.removeObject(forKey: Self.cloudSavesNameKey) }
     public func storePerformanceHUD(_ on: Bool) { defaults.set(on, forKey: Self.performanceHUDKey) }
     public func storeShowFPS(_ on: Bool) { defaults.set(on, forKey: Self.showFPSKey) }
+
+    /// Where a connected external display gets the game's picture: "off" (phone only, the display stays black), "720p"
+    /// (TV light, the game stays handheld) or "1080p" (TV docked, the built-in mode, never stored).
+    public var tvDisplay: String {
+        let value = defaults.string(forKey: Self.tvDisplayKey) ?? "1080p"
+        return Self.tvDisplays.contains(value) ? value : "1080p"
+    }
+    public func storeTVDisplay(_ value: String) {
+        guard Self.tvDisplays.contains(value), value != tvDisplay else { return }
+        if value == "1080p" { defaults.removeObject(forKey: Self.tvDisplayKey) } else { defaults.set(value, forKey: Self.tvDisplayKey) }
+        NotificationCenter.default.post(name: Self.tvDisplayDidChange, object: nil)
+    }
 
     /// The touch controls' size for every game: small, medium (the built-in size) or large.
     public var touchSize: String {

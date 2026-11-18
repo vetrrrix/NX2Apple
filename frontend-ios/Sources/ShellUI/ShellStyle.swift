@@ -34,7 +34,14 @@ public enum ShellStrings {
     /// Visual QA renders one language's `.lproj` whatever the Mac's language is. Nil in the app.
     nonisolated(unsafe) static var captureBundle: Bundle?
     public static var bundle: Bundle { captureBundle ?? .module }
+    /// The shell's own words (its settings' labels, options and notes) in the bundle the player's language lives in.
     static func text(_ key: String.LocalizationValue) -> String { String(localized: key, bundle: bundle) }
+
+    /// A shell word looked up at runtime (a value the store picks, not a literal) in the given bundle. `text` above is
+    /// for literals; a runtime String would be ambiguous with `String.LocalizationValue`.
+    static func word(_ key: String, bundle: Bundle = ShellStrings.bundle) -> String {
+        key.isEmpty ? key : bundle.localizedString(forKey: key, value: key, table: nil)
+    }
 
     /// A text of a game's `launcher.json` (section, label, note, option label) in the player's language. The file is English and
     /// not ours to change, so the catalog is keyed by that English text. The key is used as it is (a `%` in a note is not a format).

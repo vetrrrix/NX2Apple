@@ -21,9 +21,12 @@ public enum ShellInGameMenu {
         public let onValue: String?
         public let offValue: String?
         public let options: [[String]]?
+        /// True: the value belongs to the shell and not to this game's suite (the external-display setting), so the
+        /// engine's menu does not save a pick per game — dm_setting_live pokes the shell, which keeps it.
+        public let global: Bool?
 
         public init(env: String, kind: String, label: String, effectiveDefault: String,
-                    onValue: String? = nil, offValue: String? = nil, options: [[String]]? = nil) {
+                    onValue: String? = nil, offValue: String? = nil, options: [[String]]? = nil, global: Bool? = nil) {
             self.env = env
             self.kind = kind
             self.label = label
@@ -31,6 +34,7 @@ public enum ShellInGameMenu {
             self.onValue = onValue
             self.offValue = offValue
             self.options = options
+            self.global = global
         }
 
         public var resolvedOnValue: String { onValue ?? "1" }
@@ -59,8 +63,9 @@ public enum ShellInGameMenu {
     }
 
     public static func build(profile: LauncherProfile, titleID: String, shellDefaults: [String: String],
+                             tvDisplay: String = ShellSettingsStore.current.tvDisplay,
                              bundle: Bundle = ShellStrings.bundle) -> Payload {
-        let items: [Item] = allowedEnvs.compactMap { env in
+        var items: [Item] = allowedEnvs.compactMap { env in
             guard let setting = profile.settings.first(where: { $0.env == env }),
                   setting.kind == "choice" || setting.kind == "toggle" else {
                 return nil
@@ -91,12 +96,22 @@ public enum ShellInGameMenu {
                 options: localizedOptions
             )
         }
+        // The external-display setting is the shell's own, not any game's row: it is built here instead of read from a
+        // game's profile, and `global` keeps a pick out of every game's suite — dm_setting_live pokes the shell, which
+        // is where the value lives. The mode is what the settings row shows, so the menu opens on it.
+        let mode = ShellSettingsStore.tvDisplays.contains(tvDisplay) ? tvDisplay : "1080p"
+        items.append(Item(env: "DM_TV_DISPLAY", kind: "choice",
+                          label: ShellSettingsStore.tvDisplayTitle(bundle: bundle),
+                          effectiveDefault: mode,
+                          options: ShellSettingsStore.tvDisplays.map { [$0, ShellSettingsStore.tvDisplayLabel($0, bundle: bundle)] },
+                          global: true))
         return Payload(suiteName: GameDefaults.suitePrefix + titleID, items: items)
     }
 
     public static func encode(profile: LauncherProfile, titleID: String, shellDefaults: [String: String],
+                              tvDisplay: String = ShellSettingsStore.current.tvDisplay,
                               bundle: Bundle = ShellStrings.bundle) -> String? {
-        let payload = build(profile: profile, titleID: titleID, shellDefaults: shellDefaults, bundle: bundle)
+        let payload = build(profile: profile, titleID: titleID, shellDefaults: shellDefaults, tvDisplay: tvDisplay, bundle: bundle)
         guard let data = try? JSONEncoder().encode(payload) else { return nil }
         return String(data: data, encoding: .utf8)
     }

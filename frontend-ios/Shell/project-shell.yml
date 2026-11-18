@@ -74,9 +74,7 @@ targets:
               - UISceneConfigurationName: Default
                 UISceneDelegateClassName: SceneDelegate
             # A TV by cable or AirPlay gets a scene of its own instead of mirroring the phone (the engine's own dm/ios/project.yml
-            # declares the same role): the game's picture goes there, the phone keeps the pad. The delegate is this app's
-            # ShellTVSceneDelegate (ShellMain.m) — a display may connect before any game's framework is dlopen'd — which hands the
-            # window to the engine through front_tv_window (patches/0062, front_ios.m): DmTVVC, tv_attach, the 1080p cap, detach.
+            # declares the same role); the delegate is this app's own ShellTVSceneDelegate — ShellMain.m says why.
             UIWindowSceneSessionRoleExternalDisplayNonInteractive:
               - UISceneConfigurationName: TV
                 UISceneDelegateClassName: ShellTVSceneDelegate

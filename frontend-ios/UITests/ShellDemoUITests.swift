@@ -102,6 +102,36 @@ import XCTest
         capture("settings-configured-folder-rows")
     }
 
+    /// The external display is one row of three states: the row shows the mode, it opens the list, and a pick is what the
+    /// row keeps afterwards (the setting's own regression, section 3 of PLAN.md).
+    func testExternalDisplayRowOpensTheListAndPicksAMode() {
+        extraArguments = ["--samples"]
+        launch("shell-settings")
+        let row = app.buttons["setting.shell.tvDisplay"]
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        reveal(row)
+        XCTAssertTrue(app.staticTexts["Display"].exists)
+        XCTAssertEqual(row.label, "External display")
+        XCTAssertEqual(row.value as? String, "TV · 1080p (docked)", "the docked 1080p is the default the row starts on")
+        capture("external-display-row")
+
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["choice.picker"].waitForExistence(timeout: 5))
+        for option in ["off", "720p", "1080p"] {
+            XCTAssertTrue(app.buttons["choice.option.\(option)"].exists, "the list offers \(option)")
+        }
+        app.buttons["choice.option.off"].tap()
+        XCTAssertTrue(row.waitForExistence(timeout: 5), "a pick closes the list back on the row")
+        XCTAssertEqual(row.value as? String, "Phone only")
+
+        row.tap()
+        XCTAssertTrue(app.descendants(matching: .any)["choice.picker"].waitForExistence(timeout: 5))
+        app.buttons["choice.option.1080p"].tap()
+        XCTAssertTrue(row.waitForExistence(timeout: 5))
+        XCTAssertEqual(row.value as? String, "TV · 1080p (docked)")
+        capture("external-display-back-to-docked")
+    }
+
     func testGameSettingsGlassActionsPreserveBehavior() {
         extraArguments = ["--samples"]
         launch("settings")

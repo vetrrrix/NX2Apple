@@ -4,6 +4,9 @@ import Testing
 import ShellUI
 
 @Suite struct ShellSettingsStoreTests {
+    /// What a notification handler counts from the posting thread, where a plain captured `var` would not be allowed.
+    private final class NotificationCount: @unchecked Sendable { var value = 0 }
+
     private func shell() -> ShellSettingsStore { ShellSettingsStore(defaults: UserDefaults(suiteName: "t-shell-\(UUID().uuidString)")!) }
 
     @Test func padMapPersistsAndResetsWithoutChangingOtherSettings() {
@@ -128,6 +131,39 @@ import ShellUI
         game.reset()
         #expect(game.values()[layout.env] == "1" && game.isFromShell(layout))
         #expect(GameSettingsStore(profile: profile, defaults: defaults).values()[layout.env] == "2", "an unset shell mode preserves the game's Tap default")
+    }
+
+    /// The external-display setting (PLAN section 3): docked 1080p is the built-in mode and is never stored, and every
+    /// change notifies so ShellMain.m can move the picture right away.
+    @Test func theExternalDisplayIsDockedAt1080pUntilThePlayerPicksAnotherMode() {
+        let store = shell()
+        #expect(store.tvDisplay == "1080p" && store.defaults.object(forKey: ShellSettingsStore.tvDisplayKey) == nil)
+        #expect(store.gameDefaults["DM_TV_DISPLAY"] == nil, "the display is not a game's launch environment")
+
+        let counter = NotificationCount()
+        let observer = NotificationCenter.default.addObserver(forName: ShellSettingsStore.tvDisplayDidChange, object: nil, queue: nil) { _ in
+            counter.value += 1
+        }
+        defer { NotificationCenter.default.removeObserver(observer) }
+
+        store.storeTVDisplay("720p")
+        #expect(store.tvDisplay == "720p" && counter.value == 1)
+        #expect(ShellSettingsStore(defaults: store.defaults).tvDisplay == "720p")
+
+        store.storeTVDisplay("720p")
+        #expect(counter.value == 1, "the same value is not a change")
+
+        store.storeTVDisplay("tv")
+        #expect(store.tvDisplay == "720p" && counter.value == 1, "a value the row does not offer is not stored")
+
+        store.storeTVDisplay("off")
+        #expect(store.tvDisplay == "off" && counter.value == 2)
+
+        store.storeTVDisplay("1080p")
+        #expect(store.tvDisplay == "1080p" && store.defaults.object(forKey: ShellSettingsStore.tvDisplayKey) == nil)
+        #expect(counter.value == 3)
+        store.defaults.set("hdmi", forKey: ShellSettingsStore.tvDisplayKey)
+        #expect(store.tvDisplay == "1080p", "a stored value nobody knows reads as the docked default")
     }
 
     @Test func audioMixDefaultsOffPersistsAndClearsKeyWhenDisabled() {

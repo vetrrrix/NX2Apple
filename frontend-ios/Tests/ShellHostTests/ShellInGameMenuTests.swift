@@ -28,10 +28,29 @@ import ShellUI
         let profile = try LauncherProfile.parse(Data(Self.mixedProfileJSON.utf8))
         let payload = ShellInGameMenu.build(profile: profile, titleID: Fixtures.orbit, shellDefaults: [:])
         #expect(payload.suiteName == GameDefaults.suitePrefix + Fixtures.orbit)
-        #expect(payload.items.map(\.env) == ["DM_OPMODE", "DM_PICTURE_FIT", "DM_SHOW_FPS", "DM_AUDIO_MIX", "DM_METAL_HUD"])
+        #expect(payload.items.map(\.env) == ["DM_OPMODE", "DM_PICTURE_FIT", "DM_SHOW_FPS", "DM_AUDIO_MIX", "DM_METAL_HUD", "DM_TV_DISPLAY"])
 
         let excluded: Set<String> = ["DM_TOUCH_HAPTICS", "DM_RUMBLE", "DM_TOUCH_SIZE", "DM_TOUCH_STICK", "DM_LANG", "DM_RENDER_SCALE"]
         #expect(Set(payload.items.map(\.env)).isDisjoint(with: excluded))
+    }
+
+    /// The external-display setting is the shell's own row (PLAN section 3): built here instead of read from a game's
+    /// profile, and global so no game's suite keeps a copy of a pick.
+    @Test func externalDisplayIsTheShellsOwnGlobalRow() throws {
+        let profile = try LauncherProfile.parse(Data(Self.mixedProfileJSON.utf8))
+        func tv(_ mode: String) throws -> ShellInGameMenu.Item {
+            let payload = ShellInGameMenu.build(profile: profile, titleID: Fixtures.orbit, shellDefaults: [:], tvDisplay: mode)
+            return try #require(payload.items.first { $0.env == "DM_TV_DISPLAY" })
+        }
+
+        #expect(try tv("1080p").kind == "choice" && tv("1080p").global == true)
+        #expect(try tv("1080p").effectiveDefault == "1080p", "the docked 1080p is the default")
+        #expect(try tv("720p").effectiveDefault == "720p")
+        #expect(try tv("off").effectiveDefault == "off")
+        #expect(try tv("hdmi").effectiveDefault == "1080p", "a mode the row does not offer reads as the default")
+        #expect(try tv("720p").label == ShellSettingsStore.tvDisplayTitle())
+        #expect(try tv("720p").options?.map { $0[0] } == ShellSettingsStore.tvDisplays)
+        #expect(try tv("720p").options?.first { $0[0] == "off" }?[1] == ShellSettingsStore.tvDisplayLabel("off"))
     }
 
     @Test func localizesMenuUsingBundle() throws {

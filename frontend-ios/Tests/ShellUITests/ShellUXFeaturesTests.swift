@@ -83,6 +83,34 @@ import Testing
         #expect(row.value == "0")
     }
 
+    /// The external-display row (PLAN section 3): one row of three states, the docked 1080p default never stored, and a
+    /// pick from the list reaching the store (which notifies so the picture can move at once).
+    @Test func externalDisplayRowOffersThreeModesAndAppliesTheChoice() {
+        let suite = "shellui.tvdisplay.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+
+        let store = ShellSettingsStore(defaults: defaults)
+        let row = ShellSettingsRows.tvDisplayRow(store)
+        #expect(row.id == ShellSettingsRows.tvDisplay && row.value == "1080p")
+        guard case .choice(let options) = row.kind else {
+            Issue.record("the external display opens a list of choices")
+            return
+        }
+        #expect(options.map(\.id) == ["off", "720p", "1080p"])
+        #expect(options.map(\.label) == ["Phone only", "TV · 720p (light)", "TV · 1080p (docked)"])
+
+        ShellSettingsRows.apply(ShellSettingsRows.tvDisplay, value: "720p", to: store)
+        #expect(store.tvDisplay == "720p")
+        #expect(ShellSettingsRows.tvDisplayRow(store).value == "720p")
+
+        ShellSettingsRows.apply(ShellSettingsRows.tvDisplay, value: "hdmi", to: store)
+        #expect(store.tvDisplay == "720p", "a mode the row does not offer is not stored")
+
+        ShellSettingsRows.apply(ShellSettingsRows.tvDisplay, value: "1080p", to: store)
+        #expect(store.tvDisplay == "1080p" && defaults.object(forKey: ShellSettingsStore.tvDisplayKey) == nil)
+    }
+
     @Test func cloudConflictAndRestoreBackupLayersIsolateControllerFocus() {
         #expect(!LibraryView.optionsOpensShellSettings(under: .restoreBackup))
         #expect(!LibraryView.optionsOpensShellSettings(under: .cloudConflict))
