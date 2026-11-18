@@ -778,6 +778,14 @@ def check_git_specific_changed(
     return None
 
 
+def _mtime(path: Path) -> float:
+    """The file's mtime, `0.0` when it is not there to stat (a missing file is just as stale-proof as an old one)."""
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return 0.0
+
+
 def detect_built_game_older(
     game: lib.LibraryGame,
     engine_path: str,
@@ -824,10 +832,10 @@ def detect_built_game_older(
 
     tid = (game.title_id or '').strip().upper()
     matched_fw = False
+    # the shared shell's copy of this game's framework: both iOS checks below read the same file
+    fw_manifest = Path(shell_cache_path, 'frameworks', f'DmGame{tid}.framework', 'game.manifest.json')
     if game.is_ready_for_ios and shell_cache_path:
-        fw_cands = [
-            Path(shell_cache_path, 'frameworks', f'DmGame{tid}.framework', 'game.manifest.json'),
-        ]
+        fw_cands = [fw_manifest]
         for mp in fw_cands:
             if not mp.is_file():
                 continue
@@ -857,6 +865,19 @@ def detect_built_game_older(
                     return True, built_commit
                 if fw_patches and fw_patches != cur_patches:
                     return True, built_commit
+
+    # A shared-shell game's frameworks are only half the deliverable: games ship through the
+    # exported IPA (`<shell_cache>/export/NX2Apple.ipa`). A failed or interrupted pack leaves
+    # the frameworks current with no IPA at all, and an engine bump leaves the last IPA behind.
+    # Without this check such a game assessed up-to-date and the refresh button — the only way
+    # back to a pack — stayed hidden. Games with their own standalone IPA are judged by that
+    # IPA, not by the shared export.
+    if game.is_ready_for_ios and shell_cache_path:
+        shared_ipa = Path(lib.shell_ipa_path(shell_cache_path))
+        if not game.has_ipa or Path(game.ipa_path) == shared_ipa:   # a game with its own IPA is judged by that one
+            fw_mt = _mtime(fw_manifest)
+            if fw_mt and _mtime(shared_ipa) < fw_mt:
+                return True, built_commit
 
     # Standalone single-game iOS bundle (e.g. DmIOS.app): check Info.plist DMChain when no shared framework manifest matched.
     if not matched_fw and game.has_ios_app:

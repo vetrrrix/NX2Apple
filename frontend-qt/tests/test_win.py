@@ -2455,6 +2455,25 @@ class InstallFailureHintTest(unittest.TestCase):
         self.assertEqual(classify('KeyError: x'), 'dep.fix.log')
 
 
+def _fonttools_test_face(name: str):
+    """A minimal one-glyph TTF face, for tests that need real font files (fontTools)."""
+    from fontTools.fontBuilder import FontBuilder
+    from fontTools.pens.ttGlyphPen import TTGlyphPen
+    pen = TTGlyphPen(None)
+    pen.moveTo((0, 0))
+    pen.lineTo((500, 0))
+    pen.lineTo((500, 500))
+    pen.closePath()
+    fb = FontBuilder(1000, isTTF=True)
+    fb.setupGlyphOrder(['.notdef', 'A'])
+    fb.setupCharacterMap({0x41: 'A'})
+    fb.setupGlyf({'.notdef': TTGlyphPen(None).glyph(), 'A': pen.glyph()})
+    fb.setupHorizontalMetrics({'.notdef': (500, 0), 'A': (500, 0)})
+    fb.setupHorizontalHeader(ascent=800, descent=-200)
+    fb.setupNameTable({'familyName': name, 'styleName': 'Regular'})
+    return fb.font
+
+
 class WindowsBuildFixesTest(unittest.TestCase):
     """Regression tests for the Windows build pipeline fixes."""
 
@@ -4646,6 +4665,8 @@ class WindowsBuildFixesTest(unittest.TestCase):
             out_dir = root / 'out_fonts'
             std_font = root / 'win_std.ttf'
             letter_font = root / 'win_letter.ttf'
+            std_font.write_bytes(b'\x00\x00\x01\x00')     # a font that is not a collection
+            letter_font.write_bytes(b'\x00\x00\x01\x00')
             saved = sys.modules.pop('make_shared_fonts', None)
             try:
                 import importlib
@@ -4660,6 +4681,125 @@ class WindowsBuildFixesTest(unittest.TestCase):
                     sys.modules['make_shared_fonts'] = saved
                 if str(tools) in sys.path:
                     sys.path.remove(str(tools))
+
+    def test_build_shared_fonts_unwraps_a_collection_std_font(self) -> None:
+        """The standard font's Windows fallback (msyh.ttc) is a two-face collection: the cut takes
+        its first face as a plain TTF instead of fontTools's TTLibFileIsCollectionError."""
+        try:
+            from fontTools.ttLib import TTCollection, TTFont
+        except ImportError:
+            self.skipTest('fontTools is not installed')
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            tools = root / 'dm/tools'
+            tools.mkdir(parents=True)
+            calls: list[tuple[str, str, str]] = []
+            (tools / 'make_shared_fonts.py').write_text(
+                'def build(out_dir, src, letters):\n'
+                '    import os\n'
+                '    os.makedirs(out_dir, exist_ok=True)\n'
+                '    _RECORD.append((out_dir, src, letters))\n',
+                encoding='utf-8',
+            )
+
+            collection = TTCollection()
+            collection.fonts = [_fonttools_test_face('Face A'), _fonttools_test_face('Face B')]
+            ttc = root / 'win_std.ttc'
+            collection.save(str(ttc))
+            letter_font = root / 'win_letter.ttf'
+            _fonttools_test_face('Letter').save(str(letter_font))
+            out_dir = root / 'out_fonts'
+            saved = sys.modules.pop('make_shared_fonts', None)
+            try:
+                import importlib
+                sys.path.insert(0, str(tools))
+                mod = importlib.import_module('make_shared_fonts')
+                mod._RECORD = calls
+                build_app._build_shared_fonts(root, out_dir, ttc, letter_font)
+                ((_, src, letters),) = calls
+                self.assertNotEqual(src, str(ttc))
+                self.assertTrue(src.endswith('win_std-face0.ttf'), src)
+                self.assertEqual(TTFont(src).get('name').getDebugName(1), 'Face A')
+                self.assertEqual(letters, str(letter_font))   # a plain TTF passes through untouched
+            finally:
+                sys.modules.pop('make_shared_fonts', None)
+                if saved is not None:
+                    sys.modules['make_shared_fonts'] = saved
+                if str(tools) in sys.path:
+                    sys.path.remove(str(tools))
+
+    def test_prepare_fonts_unwraps_a_collection_std_font(self) -> None:
+        """The shell IPA pack runs the font cut in a subprocess (`shell_export._prepare_fonts`),
+        so the collection unwrap must happen on the paths handed to that subprocess — the same
+        msyh.ttc fallback must not raise TTLibFileIsCollectionError there either."""
+        try:
+            from fontTools.ttLib import TTCollection
+        except ImportError:
+            self.skipTest('fontTools is not installed')
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            repo = root / 'repo'
+            tools = repo / 'dm' / 'tools'
+            tools.mkdir(parents=True)
+            (tools / 'make_shared_fonts.py').write_text(
+                'def build(out_dir, src, letters):\n'
+                '    import json, os\n'
+                '    os.makedirs(out_dir, exist_ok=True)\n'
+                "    for fn in ('standard.ttf', 'chinese_simplified.ttf',"
+                " 'chinese_simplified_ext.ttf', 'chinese_traditional.ttf', 'korean.ttf',"
+                " 'nintendo_ext.ttf'):\n"
+                "        open(os.path.join(out_dir, fn), 'wb').close()\n"
+                "    with open(os.path.join(out_dir, 'record.json'), 'w') as f:\n"
+                '        json.dump([src, letters], f)\n',
+                encoding='utf-8',
+            )
+            collection = TTCollection()
+            collection.fonts = [_fonttools_test_face('Face A'), _fonttools_test_face('Face B')]
+            ttc = root / 'win_std.ttc'
+            collection.save(str(ttc))
+            letter_font = root / 'win_letter.ttf'
+            _fonttools_test_face('Letter').save(str(letter_font))
+            staged = root / 'staged' / 'DmShell.app'
+            from nspb_qt.win import shell_export
+            env = {'NSPB_STD_FONT': str(ttc), 'NSPB_LETTER_FONT': str(letter_font)}
+            with mock.patch.dict(os.environ, env):
+                shell_export._prepare_fonts(staged, repo, sys.executable)
+            record = json.loads((staged / 'dm' / 'font' / 'record.json').read_text())
+            self.assertTrue(record[0].endswith('win_std-face0.ttf'), record)
+            self.assertNotEqual(record[0], str(ttc))
+            self.assertEqual(record[1], str(letter_font))   # a plain TTF passes through untouched
+
+    def test_detect_built_game_older_when_shared_ipa_lags_the_framework(self) -> None:
+        """A shared-shell game whose exported IPA is missing or older than its mirrored framework
+        is behind: a failed pack must bring the refresh button back, not hide it as up-to-date."""
+        from nspb_qt import library as lib
+        from nspb_qt import refresh_flow
+
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            engine = root / 'engine'
+            engine.mkdir()
+            shell_cache = root / 'shell'
+            fw_dir = shell_cache / 'frameworks' / 'DmGame010015100B514000.framework'
+            fw_dir.mkdir(parents=True)
+            manifest = fw_dir / 'game.manifest.json'
+            manifest.write_text('{"loader": "FH"}', encoding='utf-8')
+            fw_mt = manifest.stat().st_mtime
+            ipa = shell_cache / 'export' / 'NX2Apple.ipa'
+            game = lib.LibraryGame(title_id='010015100B514000', name='Wonder',
+                                   ios_app_path=str(fw_dir))
+            older = refresh_flow.detect_built_game_older
+
+            self.assertTrue(older(game, str(engine), str(shell_cache))[0],
+                            'no IPA at all: the framework was never packed')
+            ipa.parent.mkdir()
+            ipa.write_bytes(b'IPA')
+            os.utime(ipa, (fw_mt - 3600, fw_mt - 3600))
+            self.assertTrue(older(game, str(engine), str(shell_cache))[0],
+                            'an IPA older than the framework is a stale pack')
+            os.utime(ipa, (fw_mt + 3600, fw_mt + 3600))
+            self.assertFalse(older(game, str(engine), str(shell_cache))[0],
+                             'an IPA newer than the framework is current')
 
 
 class UnrealInlineShadersWinTest(unittest.TestCase):

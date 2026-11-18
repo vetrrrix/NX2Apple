@@ -1269,6 +1269,28 @@ def letter_font() -> Path | None:
                             fonts / 'arialbd.ttf', fonts / 'arial.ttf'])
 
 
+def single_face(font: Path) -> Path:
+    """`make_shared_fonts` cuts one face out of a TTF; a font the OS ships as a collection
+    (.ttc — Microsoft YaHei, the standard font's fallback when Office's Arial Unicode is not
+    installed) hands fontTools's TTFont its first face as a plain TTF instead.
+
+    Both font consumers go through this: the full app build (`build_app._build_shared_fonts`)
+    and the shell IPA pack (`shell_export._prepare_fonts`, which runs the tool in a
+    subprocess, so the unwrap has to happen before the path is handed over).
+    """
+    try:
+        with open(font, 'rb') as fh:
+            magic = fh.read(4)
+    except OSError:
+        return font
+    if magic != b'ttcf':
+        return font
+    from fontTools.ttLib import TTCollection
+    out = Path(tempfile.mkdtemp(prefix='nspb-font-face-')) / (font.stem + '-face0.ttf')
+    TTCollection(str(font)).fonts[0].save(str(out))
+    return out
+
+
 # ---------------------------------------------------------------- the real probes
 
 def probe_compile(sdk: Path, clang: Path | None = None) -> tuple[bool, str]:

@@ -143,7 +143,7 @@ def _build_shared_fonts(repo: Path, out_dir: Path, font: Path, letter: Path) -> 
     if tools not in sys.path:
         sys.path.insert(0, tools)
     import make_shared_fonts
-    make_shared_fonts.build(str(out_dir), str(font), str(letter))
+    make_shared_fonts.build(str(out_dir), str(tc.single_face(font)), str(tc.single_face(letter)))
 
 
 def py(*args, env=None, capture=True) -> str:
