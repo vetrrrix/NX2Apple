@@ -46,7 +46,8 @@ typedef void (*dm_tv_window_fn)(void *);   // the game framework's front_tv_wind
 static dm_tv_window_fn g_tv_window_fn;     // dlsym'd at Play; NULL: no game's framework loaded, or one built before the hook (the game then never docks)
 typedef void (*dm_tv_opmode_fn)(int);      // its front_tv_opmode (front_ios.m, patches/0066): the mode the display's setting names, 0 handheld 720p, 1 docked 1080p
 static dm_tv_opmode_fn g_tv_opmode_fn;     // dlsym'd at Play with it; NULL: a framework built before the hook docks at 1080p whatever the setting says
-static UIWindow *g_tv_window;              // the external display's window (ShellTVSceneDelegate), while its scene is connected
+static UIWindow *g_tv_window;              // the external display's window, from the game's claim until the library releases it
+static UIWindowScene *g_tv_scene;          // the connected external display's scene: no window on it, iOS mirrors the phone
 static UIViewController *g_library_vc;
 static char g_active_exe[1024];
 static char g_active_game_id[64];
@@ -120,7 +121,7 @@ void dm_shell_return_to_library(void) {
         g_present = NULL;
         g_tv_window_fn = NULL;   // before the framework's data segments are restored: no calls into it past this point
         g_tv_opmode_fn = NULL;
-        if (g_tv_window) g_tv_window.rootViewController = [UIViewController new];   // the game's view went with the framework's hierarchy: the TV back to black until the next game
+        if (g_tv_window) g_tv_window.rootViewController = [UIViewController new];   // the game's view went with the framework's hierarchy: the engine's VC leaves the window before its data is restored
         g_boot_ok = 0;
         if (fbase) restore_framework_data(fbase);
         UIWindow *window = nil;
@@ -139,6 +140,11 @@ void dm_shell_return_to_library(void) {
         fflush(stderr);
         if (freopen(slog.fileSystemRepresentation, "a", stderr)) setvbuf(stderr, NULL, _IOLBF, 0);
         fprintf(stderr, "shell: returned to library from %s\n", finished_exe);
+        if (g_tv_window) {   // release the display: an external scene left with no window is what hands it back to the system mirror
+            g_tv_window.hidden = YES;
+            g_tv_window = nil;   // shortcut: mirroring resuming AFTER a claim is device-untested — SDL #16161 proves only the never-attached case, one plug-in test decides
+            fprintf(stderr, "shell: released the external display, the scene is empty again\n");
+        }
     };
     if ([NSThread isMainThread]) work();
     else dispatch_async(dispatch_get_main_queue(), work);
@@ -338,7 +344,6 @@ const char *dm_shell_start_game(const char *const *keys, const char *const *valu
         fprintf(stderr, "[RED] boot: %s: %s\n", executable, err);
         return err;
     }
-    if (!tv_window && g_tv_window) fprintf(stderr, "shell: this game's framework has no front_tv_window, the connected display stays black\n");
     if (!tv_opmode && ShellTVDisplay.mode == 1) fprintf(stderr, "shell: this game's framework has no front_tv_opmode, the display docks at 1080p despite the 720p setting\n");
     fprintf(stderr, "boot: game framework %s (handle %p, image base %p, glue v%d)\n", executable, h, info.dli_fbase, *ver);
     save_framework_data(info.dli_fbase, game_key, executable, exe_st.st_mtime);
@@ -363,11 +368,22 @@ const char *dm_shell_start_game(const char *const *keys, const char *const *valu
 
 // The external-display setting (ShellSettingsStore's tvDisplay, read through ShellTVDisplay): at each hand-off point — the
 // scene's willConnect, dm_shell_present_game below, and the store's change notification — the window goes to the connected
-// display only at the setting's mode. Phone only never hands it over: the display stays black, no mirroring, whatever the
-// framework knows how to do
+// display only at the setting's mode. The display is claimed only while a game with the TV hooks runs: an empty scene is what
+// leaves iOS mirroring the phone (the library mirrors), Phone only runs the claimed display black, and a framework built
+// before front_tv_window never claims it — that game mirrors on the phone like it did without a display
 static void shell_tv_handoff(void) {
-    if (!g_tv_window || !g_tv_window_fn) return;   // no display connected, or no game framework loaded: nothing to hand
+    if (!g_tv_scene) return;                      // no display connected: the display's setting has nothing to act on
+    if (!g_tv_window_fn) {                        // no TV-capable game running: leave the scene empty, iOS mirrors the phone
+        if (g_boot_ok) fprintf(stderr, "shell: this game's framework has no front_tv_window, the display mirrors the phone\n");
+        return;
+    }
     int mode = (int)ShellTVDisplay.mode;           // 0 phone only, 1 TV 720p (the game stays handheld), 2 TV 1080p (docked)
+    if (!g_tv_window) {                            // the claim: making a window is what stops iOS mirroring, black until the game docks into it
+        g_tv_window = [[UIWindow alloc] initWithWindowScene:g_tv_scene];
+        g_tv_window.backgroundColor = UIColor.blackColor;
+        g_tv_window.hidden = NO;                   // visible but not key, so the phone's window keeps the keyboard
+        fprintf(stderr, "shell: claimed the external display\n");
+    }
     if (mode == 0) {
         g_tv_window_fn(NULL);                      // front_ios.m tv_detach: the picture back on the phone (idempotent)
         fprintf(stderr, "shell: external display set to Phone only, the display stays black\n");
@@ -409,25 +425,21 @@ void dm_shell_request_stop_game(void) {
 }
 
 // The TV scene's delegate, in this binary (project-shell.yml names it for the external-display role): a display may connect
-// before any game's framework is dlopen'd, and front_ios.m's DmTVSceneDelegate only exists inside one. The window is made here
-// at once — without a window iOS goes on mirroring the phone; not key, so the phone's window keeps the keyboard — and the game's
-// front end docks the picture into it through front_tv_window (front_ios.m, patches/0062), now or at the next dm_shell_present_game
+// before any game's framework is dlopen'd, and front_ios.m's DmTVSceneDelegate only exists inside one. Connecting only
+// records the scene: the window is made by shell_tv_handoff's claim when a TV-capable game runs, because a window on the
+// scene is what stops iOS mirroring the phone, and outside a game the mirror is what the display should show
 @interface ShellTVSceneDelegate : UIResponder <UIWindowSceneDelegate>
-@property (strong, nonatomic) UIWindow *window;
 @end
 @implementation ShellTVSceneDelegate
 - (void)scene:(UIScene *)scene willConnectToSession:(UISceneSession *)session options:(UISceneConnectionOptions *)o {
     (void)session; (void)o;
-    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene *)scene];
-    self.window.backgroundColor = UIColor.blackColor;
-    self.window.hidden = NO;
-    g_tv_window = self.window;
-    shell_tv_handoff();   // a game is running: it docks now, at the setting's mode (front_ios.m tv_attach); Phone only keeps the display black
+    g_tv_scene = (UIWindowScene *)scene;
+    shell_tv_handoff();   // a game is running: claim and dock at the setting's mode now; in the library the scene stays empty and the phone mirrors
 }
 - (void)sceneDidDisconnect:(UIScene *)s {
-    if (g_tv_window == self.window) g_tv_window = nil;
-    if (g_tv_window_fn) g_tv_window_fn(NULL);   // front_ios.m tv_detach: the picture back on the phone, the operation mode back
-    self.window = nil;
+    if (g_tv_window_fn) g_tv_window_fn(NULL);   // detach first: the picture back to the phone, the operation mode back
+    g_tv_window = nil;
+    if (g_tv_scene == (UIWindowScene *)s) g_tv_scene = nil;
 }
 @end
 
